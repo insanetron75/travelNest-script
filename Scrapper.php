@@ -1,7 +1,4 @@
 <?php
-namespace AppBundle\Tools;
-
-use Symfony\Component\DomCrawler\Crawler;
 
 class Scrapper
 {
@@ -10,7 +7,7 @@ class Scrapper
     protected $type;
     protected $bedroomCount;
     protected $bathroomCount;
-    protected $amenities = [];
+    protected $amenities;
 
     public function __construct($link)
     {
@@ -20,73 +17,117 @@ class Scrapper
 
     protected function buildObject()
     {
-        ini_set('user_agent','Mozilla/4.0 (compatible; MSIE 6.0)');
+        ini_set('user_agent', 'Mozilla/4.0 (compatible; MSIE 6.0)');
         $html = file_get_contents($this->link);
 
         if (!empty($html)) {
-            $crawler = new Crawler($html);
-            $this->scrapeName($crawler);
-            $this->scrapeType($crawler);
-            $this->scrapeBedrooms($crawler);
-            $this->scrapeBathroom($crawler);
-            $this->scrapeAmenities($crawler);
+            $doc = new DOMDocument();
+            libxml_use_internal_errors(true); //disable libxml errors
+            $doc->loadHTML($html);
+            $this->scrapeName($doc);
+            $this->scrapeType($doc);
+            $this->scrapeBedrooms($doc);
+            $this->scrapeBathroom($doc);
+            $this->scrapeAmenities($doc);
         }
     }
 
-    public function scrapeName(Crawler $crawler)
+    public function scrapeName(DOMDocument $doc)
     {
-        $name = $crawler->filter(
-            '#summary > div._2h22gn > div._1kzvqab3 > div:nth-child(2) > div:nth-child(1) > div:nth-child(3) > div > div._1hpgssa1 > div:nth-child(1) > div > span > h1'
-        )->text();
+        $this->setName(
+            $this->retrieveValue(
+                $doc,
+                '//*[@id="summary"]/div[2]/div[1]/div[2]/div[1]/div[1]/div/div[1]/div[1]/div/span/h1'
+            )
+        );
 
-        $this->setName($name);
     }
 
-    protected function scrapeType(Crawler $crawler)
+    protected function scrapeType(DOMDocument $doc)
     {
-        $type = $crawler->filter(
-            '#summary > div._2h22gn > div._1kzvqab3 > div:nth-child(2) > div:nth-child(1) > a > div > span > span > span'
-        )->text();
-
-        $this->setType($type);
+        $this->setType(
+            $this->retrieveValue(
+                $doc,
+                '//*[@id="summary"]/div[2]/div[1]/div[2]/div[1]/a/div/span/span/span'
+            )
+        );
     }
 
-    protected function scrapeBedrooms(Crawler $crawler)
+    protected function scrapeBedrooms(DOMDocument $doc)
     {
-        $bedroomString = $bedroomString = $crawler->filter(
-            '#summary > div._2h22gn > div._1kzvqab3 > div:nth-child(2) > div:nth-child(1) > div:nth-child(5) > div > div:nth-child(2) > div > div:nth-child(2) > span'
-        )->text();
 
-        $array = explode(' ', trim($bedroomString));
-        $this->setBedroomCount($array[0]);
+        $this->setBedroomCount(
+            $this->retrieveValue(
+                $doc,
+                '//*[@id="summary"]/div[2]/div[1]/div[2]/div[1]/div[3]/div[2]/div[2]/div/div[2]'
+            )
+        );
     }
 
-    protected function scrapeBathroom(Crawler $crawler)
+    protected function scrapeBathroom(DOMDocument $doc)
     {
-        $bathroomString = $crawler->filter(
-            '#summary > div._2h22gn > div._1kzvqab3 > div:nth-child(2) > div:nth-child(1) > div:nth-child(5) > div > div:nth-child(4) > div > div:nth-child(2) > span'
-        )->text();
-        $array = explode(' ', trim($bathroomString));
-        $this->setBathroomCount((int)$array[0]);
+        $this->setBathroomCount(
+            $this->retrieveValue(
+                $doc,
+                '//*[@id="summary"]/div[2]/div[1]/div[2]/div[1]/div[3]/div[2]/div[3]/div/div[2]'
+            )
+        );
     }
 
-    protected function scrapeAmenities(Crawler $crawler)
+    protected function scrapeAmenities(DOMDocument $doc)
     {
-        $amenityHTML = $crawler->filter(
-            '#room > div > div.room__dls > div._uy08umt > div > div._2h22gn > div > div:nth-child(2) > div:nth-child(1) > div:nth-child(1) > div > div > div > div:nth-child(2) > div:nth-child(1) > div '
-        )->html();
+        $amenities = $this->retrieveValue(
+            $doc,
+            '//*[@class="amenities"]/div[1]/div[2]/div[1]'
+        );
 
-        $stringList = strip_tags($amenityHTML);
-        $amenitiesArray = explode(PHP_EOL, $stringList);
-        $this->setAmenities(array_filter($amenitiesArray));
+        if (!strpos($amenities, ',')) {
+            // For some reason the results are inconsistent.  There are occasions where it returns half of the
+            // amenities as a single string rather than a comma delimited string.
+            // If that happens try again and it should work
+            $this->setAmenities('Error getting Amenities');
+        } else {
+            $this->setAmenities($amenities);
+        }
     }
 
+    protected function retrieveValue(DOMDocument $doc, string $xpath)
+    {
+        $xpathObject = new DOMXPath($doc);
+
+        $nodeList = $xpathObject->query($xpath);
+        if ($nodeList->length) {
+            foreach ($nodeList as $row) {
+                if ($row->childNodes->length) {
+                    return $this->getChildNodeValues($row);
+                } else {
+                    return $row->nodeValue;
+                }
+            }
+        }
+
+        return 'Unable To Retrieve Value';
+    }
+
+    // If the returned node had child nodes, recursively go through children and
+    // return them as a comma delimited string
+    protected function getChildNodeValues($node) {
+        $returnArray = [];
+        foreach ($node->childNodes as $childNode) {
+            if ($childNode->childNodes && $childNode->childNodes->length > 1) {
+                $returnArray[] = $this->getChildNodeValues($childNode);
+            } else {
+                $returnArray[] = $childNode->nodeValue;
+            }
+        }
+        return implode(',', $returnArray);
+    }
     public function getOutput()
     {
         return [
-            'name' => $this->getName(),
-            'type' => $this->getType(),
-            'bedrooms' => $this->getBedroomCount(),
+            'name'      => $this->getName(),
+            'type'      => $this->getType(),
+            'bedrooms'  => $this->getBedroomCount(),
             'bathrooms' => $this->getBathroomCount(),
             'amenities' => $this->getAmenities()
         ];
@@ -112,7 +153,7 @@ class Scrapper
         $this->name = $name;
     }
 
-    public function getType():string
+    public function getType(): string
     {
         return $this->type;
     }
@@ -122,32 +163,32 @@ class Scrapper
         $this->type = $type;
     }
 
-    public function getBedroomCount()
+    public function getBedroomCount():string
     {
         return $this->bedroomCount;
     }
 
-    public function setBedroomCount($bedroomCount)
+    public function setBedroomCount(string $bedroomCount)
     {
         $this->bedroomCount = $bedroomCount;
     }
 
-    public function getBathroomCount():int
+    public function getBathroomCount():string
     {
         return $this->bathroomCount;
     }
 
-    public function setBathroomCount(int $bathroomCount)
+    public function setBathroomCount(string $bathroomCount)
     {
         $this->bathroomCount = $bathroomCount;
     }
 
-    public function getAmenities():array
+    public function getAmenities():string
     {
         return $this->amenities;
     }
 
-    public function setAmenities(array $amenities)
+    public function setAmenities(string $amenities)
     {
         $this->amenities = $amenities;
     }
